@@ -1,0 +1,698 @@
+---
+title: "Accounting for Comorbidity in Etiologic Studies"
+author: "VK"
+date: "2024-08-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+```{r}
+# Function for creating misclassification of binary C
+
+
+add_misclassified <- function(DF, C_var, X_var,
+                               sens = 0.8, spec = 0.9,
+                               sens0 = NULL, spec0 = NULL,
+                               sens1 = NULL, spec1 = NULL) {
+  C <- DF[[C_var]]
+  X <- DF[[X_var]]
+  n <- length(C)
+  
+  # Non-differential misclassification
+  C_mis_nd <- ifelse(C == 1,
+                     rbinom(n, 1, sens),
+                     rbinom(n, 1, 1 - spec))
+  
+  # Name for the non-differential variable
+  ndif_name <- paste0(C_var, "_ndif")
+  DF[[ndif_name]] <- C_mis_nd
+  
+  # Differential misclassification (only if all values provided)
+  if (!is.null(sens0) && !is.null(spec0) && !is.null(sens1) && !is.null(spec1)) {
+    C_mis_diff <- rep(NA, n)
+    for (i in seq_len(n)) {
+      if (X[i] == 0) {
+        C_mis_diff[i] <- ifelse(C[i] == 1,
+                                rbinom(1, 1, sens0),
+                                rbinom(1, 1, 1 - spec0))
+      } else {
+        C_mis_diff[i] <- ifelse(C[i] == 1,
+                                rbinom(1, 1, sens1),
+                                rbinom(1, 1, 1 - spec1))
+      }
+    }
+    
+    # Name for the differential variable
+    dif_name <- paste0(C_var, "_dif")
+    DF[[dif_name]] <- C_mis_diff
+  }
+  
+  return(DF)
+}
+```
+
+
+
+
+```{r}
+# Set the seed for reproducibility
+set.seed(1447080)
+
+# --- Simulation Setup ---
+# Define the number of individuals for each simulation run
+n_a <- 10000
+
+# Define the number of simulation iterations
+num_iterations <- 5000
+
+# Define the model types for output column naming
+model_types <- c("LM", "RD", "RR", "OR")
+# --- Generate comprehensive column names for the results data frame ---
+column_names <- c()
+
+# Scenarios 1-6: 4 models per outcome type (crude, adjC, adjC1 (non-dif), adjC2(dif))
+for (s in 1:6) {
+  for (mt in model_types) {
+    column_names <- c(column_names,
+                      paste0("S", s, "_", mt, "_X_crude"),
+                      paste0("S", s, "_", mt, "_X_adjC1"),
+                      paste0("S", s, "_", mt, "_X_adjC2"),
+                      paste0("S", s, "_", mt, "_X_adjC3"))
+  }
+}
+
+# Scenario 7: 2 models per outcome type (crude, adjC)
+for (mt in model_types) {
+  column_names <- c(column_names,
+                    paste0("S7_", mt, "_X_crude"),
+                    paste0("S7_", mt, "_X_adjC"))
+}
+
+# Scenario 8: 4 models per outcome type (crude, adjC, adjC1 (non-dif), adjC2(dif))
+for (mt in model_types) {
+  column_names <- c(column_names,
+                    paste0("S8_", mt, "_X_crude"),
+                    paste0("S8_", mt, "_X_adjC1"),
+                    paste0("S8_", mt, "_X_adjC2"),
+                    paste0("S8_", mt, "_X_adjC3"))
+}
+
+# Calculate the total number of columns needed based on the generated names
+num_cols <- length(column_names)
+
+# Initialize an empty data frame with the correct number of columns and rows
+results <- as.data.frame(matrix(NA, nrow = num_iterations, ncol = num_cols))
+colnames(results) <- column_names
+
+# --- Simulation Parameters for add_misclassified ---
+# These parameters are consistent across all scenarios
+misclass_sens <- 0.85
+misclass_spec <- 0.9
+misclass_sens0 <- 0.70
+misclass_spec0 <- 0.70
+misclass_sens1 <- 0.98
+misclass_spec1 <- 0.98
+
+
+
+
+# --- Simulation Loop ---
+for (i in 1:num_iterations) {
+
+# Initialize column index for results data frame
+current_col_idx <- 1
+
+  # --- Scenario #1 ---
+  # Comorbidity
+  c_a1 <- rbinom(n_a, size = 1, prob = 0.5)
+  # Exposure
+  px_a1 <- 1 / (1 + exp(-(log(2^-0.5) + log(2) * c_a1)))
+  x_a1 <- rbinom(n_a, size = 1, prob = px_a1)
+  # Outcome
+  py_a1_RD <- 0.2 + 0.2 * x_a1 + 0.2 * c_a1
+  py_a1_RR <- exp((log(0.2) + log(2) * x_a1 + log(2) * c_a1))
+  py_a1_OR <- 1 / (1 + exp(-(log(0.4) + log(2) * x_a1 + log(2) * c_a1)))
+  y_a1_LM <- rnorm(n_a, 2, 2) + rnorm(n_a, 2 * x_a1, 2) + rnorm(n_a, 2 * c_a1, 2)
+  y_a1_RD <- rbinom(n_a, size = 1, prob = py_a1_RD)
+  y_a1_RR <- rbinom(n_a, size = 1, prob = py_a1_RR)
+  y_a1_OR <- rbinom(n_a, size = 1, prob = py_a1_OR)
+
+  df.a1 <- data.frame(X = x_a1, C = c_a1, Y_LM = y_a1_LM, Y_RD = y_a1_RD, Y_RR = y_a1_RR, Y_OR = y_a1_OR)
+
+  # Missclassification of C
+  df.a1 <- add_misclassified(df.a1, C_var = "C", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+
+  # Run GLMs for Scenario 1 - LM Models
+  results[i, current_col_idx] <- glm(Y_LM ~ X, family = gaussian(link = "identity"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_LM ~ X + C, family = gaussian(link = "identity"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_LM ~ X + C_ndif, family = gaussian(link = "identity"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_LM ~ X + C_dif, family = gaussian(link = "identity"), data = df.a1)$coefficients[2]
+  current_col_idx <- current_col_idx + 4 # Move to the next set of columns
+
+  # Run GLMs for Scenario 1 - RD Models
+  results[i, current_col_idx] <- glm(Y_RD ~ X, family = binomial(link = "identity"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RD ~ X + C, family = binomial(link = "identity"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RD ~ X + C_ndif, family = binomial(link = "identity"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RD ~ X + C_dif, family = binomial(link = "identity"), data = df.a1)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 1 - RR Models
+  results[i, current_col_idx] <- glm(Y_RR ~ X, family = poisson(link = "log"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RR ~ X + C, family = poisson(link = "log"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RR ~ X + C_ndif, family = poisson(link = "log"), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RR ~ X + C_dif, family = poisson(link = "log"), data = df.a1)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 1 - OR Models
+  results[i, current_col_idx] <- glm(Y_OR ~ X, family = binomial(), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_OR ~ X + C, family = binomial(), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_OR ~ X + C_ndif, family = binomial(), data = df.a1)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_OR ~ X + C_dif, family = binomial(), data = df.a1)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  
+  # --- Scenario #2 ---
+  # Exposure
+  x_a2 <- rbinom(n_a, size = 1, prob = 0.5)
+  # Comorbidity
+  pc_a2 <- exp((log(0.30) + log(2) * x_a2))
+  c_a2 <- rbinom(n_a, size = 1, prob = pc_a2)
+  # Outcome
+  py_a2_RD <- 0.20 + 0.2 * 0.7 * x_a2 + 0.2 * c_a2
+  py_a2_RR <- exp(log((0.20)) + log(2) * x_a2 + log(2) * c_a2 + log(3/4) * x_a2 * c_a2)
+  py_a2_OR <- 1 / (1 + exp(-(log((0.20)) + log(2) * x_a2 + log(2)*c_a2 + log(0.587/0.8) * x_a2 * c_a2)))
+  y_a2_LM <- rnorm(n_a, 2, 2) + rnorm(n_a, 2 * x_a2 * 0.7, 2) + rnorm(n_a, 2 * c_a2, 2)
+  y_a2_RD <- rbinom(n_a, size = 1, prob = py_a2_RD)
+  y_a2_RR <- rbinom(n_a, size = 1, prob = py_a2_RR)
+  y_a2_OR <- rbinom(n_a, size = 1, prob = py_a2_OR)
+
+  df.a2 <- data.frame(X = x_a2, C = c_a2, Y_LM = y_a2_LM, Y_RD = y_a2_RD, Y_RR = y_a2_RR, Y_OR = y_a2_OR)
+
+  # Missclassification of C
+  df.a2 <- add_misclassified(df.a2, C_var = "C", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+
+  # Run GLMs for Scenario 2 - LM Models
+  results[i, current_col_idx] <- glm(Y_LM ~ X, family = gaussian(link = "identity"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_LM ~ X + C, family = gaussian(link = "identity"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_LM ~ X + C_ndif, family = gaussian(link = "identity"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_LM ~ X + C_dif, family = gaussian(link = "identity"), data = df.a2)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 2 - RD Models
+  results[i, current_col_idx] <- glm(Y_RD ~ X, family = binomial(link = "identity"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RD ~ X + C, family = binomial(link = "identity"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RD ~ X + C_ndif, family = binomial(link = "identity"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RD ~ X + C_dif, family = binomial(link = "identity"), data = df.a2)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 2 - RR Models
+  results[i, current_col_idx] <- glm(Y_RR ~ X, family = poisson(link = "log"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RR ~ X + C, family = poisson(link = "log"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RR ~ X + C_ndif, family = poisson(link = "log"), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RR ~ X + C_dif, family = poisson(link = "log"), data = df.a2)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 2 - OR Models
+  results[i, current_col_idx] <- glm(Y_OR ~ X, family = binomial(), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_OR ~ X + C, family = binomial(), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_OR ~ X + C_ndif, family = binomial(), data = df.a2)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_OR ~ X + C_dif, family = binomial(), data = df.a2)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  
+  # --- Scenario #3 ---
+  # Exposure
+  x_a3 <- rbinom(n_a, size = 1, prob = 0.5)
+  # Outcome
+  py_a3_RD <- 0.8 / 3 + 0.2 * x_a3
+  py_a3_RR <- exp((log(0.4 * (2 / 3)) + log(2) * x_a3))
+  py_a3_OR <- 1 / (1 + exp(-(log(0.4) + log(2) * x_a3)))
+  y_a3_LM <- rnorm(n_a, 7 / 3, 2) + rnorm(n_a, 2 * x_a3, 2)
+  y_a3_RD <- rbinom(n_a, size = 1, prob = py_a3_RD)
+  y_a3_RR <- rbinom(n_a, size = 1, prob = py_a3_RR)
+  y_a3_OR <- rbinom(n_a, size = 1, prob = py_a3_OR)
+
+  # Comorbidity
+  pc_a3_LM <- 1 / (1 + exp(-(log(0.2) + log(2) * x_a3 + log(2) * y_a3_LM)))
+  pc_a3_RD <- 0.1 + 0.1 * x_a3 + 0.2 * y_a3_RD
+  pc_a3_RR <- exp(log(0.1) + log(2) * x_a3 + log(2) * y_a3_RR)
+  pc_a3_OR <- 1 / (1 + exp(-(log(0.25) + log(2) * x_a3 + log(2) * y_a3_OR)))
+  c_a3_LM <- rbinom(n_a, size = 1, prob = pc_a3_LM)
+  c_a3_RD <- rbinom(n_a, size = 1, prob = pc_a3_RD)
+  c_a3_RR <- rbinom(n_a, size = 1, prob = pc_a3_RR)
+  c_a3_OR <- rbinom(n_a, size = 1, prob = pc_a3_OR)
+
+  df.a3 <- data.frame(X = x_a3, C_LM = c_a3_LM, C_RD = c_a3_RD, C_RR = c_a3_RR, C_OR = c_a3_OR,
+                      Y_LM = y_a3_LM, Y_RD = y_a3_RD, Y_RR = y_a3_RR, Y_OR = y_a3_OR)
+
+  # Missclassification of C variables - note, C_var dynamically changes
+  df.a3 <- add_misclassified(df.a3, C_var = "C_LM", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+  df.a3 <- add_misclassified(df.a3, C_var = "C_RD", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+  df.a3 <- add_misclassified(df.a3, C_var = "C_RR", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+  df.a3 <- add_misclassified(df.a3, C_var = "C_OR", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+
+  # Run GLMs for Scenario 3 - LM Models (using C_LM)
+  results[i, current_col_idx] <- glm(Y_LM ~ X, family = gaussian(link = "identity"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_LM ~ X + C_LM, family = gaussian(link = "identity"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_LM ~ X + C_LM_ndif, family = gaussian(link = "identity"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_LM ~ X + C_LM_dif, family = gaussian(link = "identity"), data = df.a3)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 3 - RD Models (using C_RD)
+  results[i, current_col_idx] <- glm(Y_RD ~ X, family = binomial(link = "identity"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RD ~ X + C_RD, family = binomial(link = "identity"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RD ~ X + C_RD_ndif, family = binomial(link = "identity"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RD ~ X + C_RD_dif, family = binomial(link = "identity"), data = df.a3)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 3 - RR Models (using C_RR)
+  results[i, current_col_idx] <- glm(Y_RR ~ X, family = poisson(link = "log"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RR ~ X + C_RR, family = poisson(link = "log"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RR ~ X + C_RR_ndif, family = poisson(link = "log"), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RR ~ X + C_RR_dif, family = poisson(link = "log"), data = df.a3)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 3 - OR Models (using C_OR)
+  results[i, current_col_idx] <- glm(Y_OR ~ X, family = binomial(), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_OR ~ X + C_OR, family = binomial(), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_OR ~ X + C_OR_ndif, family = binomial(), data = df.a3)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_OR ~ X + C_OR_dif, family = binomial(), data = df.a3)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+
+  # --- Scenario #4 ---
+  # Exposure
+  x_a4 <- rbinom(n_a, size = 1, prob = 0.5)
+  # Outcome
+  py_a4_RD <- 0.8 / 3 + 0.2 * x_a4
+  py_a4_RR <- exp((log(0.4 * (2 / 3)) + log(2) * x_a4))
+  py_a4_OR <- 1 / (1 + exp(-(log(0.465727) + log(2) * x_a4)))
+  y_a4_LM <- rnorm(n_a, 7 / 3, 2) + rnorm(n_a, 2 * x_a4, 2)
+  y_a4_RD <- rbinom(n_a, size = 1, prob = py_a4_RD)
+  y_a4_RR <- rbinom(n_a, size = 1, prob = py_a4_RR)
+  y_a4_OR <- rbinom(n_a, size = 1, prob = py_a4_OR)
+
+  # Comorbidity
+  pc_a4 <- 1 / (1 + exp(-(log(0.2958163) + log(2) * x_a4)))
+  c_a4 <- rbinom(n_a, size = 1, prob = pc_a4)
+
+  df.a4 <- data.frame(X = x_a4, C = c_a4, Y_LM = y_a4_LM, Y_RD = y_a4_RD, Y_RR = y_a4_RR, Y_OR = y_a4_OR)
+
+  # Missclassification of C
+  df.a4 <- add_misclassified(df.a4, C_var = "C", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+
+  # Run GLMs for Scenario 4 - LM Models
+  results[i, current_col_idx] <- glm(Y_LM ~ X, family = gaussian(link = "identity"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_LM ~ X + C, family = gaussian(link = "identity"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_LM ~ X + C_ndif, family = gaussian(link = "identity"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_LM ~ X + C_dif, family = gaussian(link = "identity"), data = df.a4)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 4 - RD Models
+  results[i, current_col_idx] <- glm(Y_RD ~ X, family = binomial(link = "identity"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RD ~ X + C, family = binomial(link = "identity"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RD ~ X + C_ndif, family = binomial(link = "identity"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RD ~ X + C_dif, family = binomial(link = "identity"), data = df.a4)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 4 - RR Models
+  results[i, current_col_idx] <- glm(Y_RR ~ X, family = poisson(link = "log"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RR ~ X + C, family = poisson(link = "log"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RR ~ X + C_ndif, family = poisson(link = "log"), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RR ~ X + C_dif, family = poisson(link = "log"), data = df.a4)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 4 - OR Models
+  results[i, current_col_idx] <- glm(Y_OR ~ X, family = binomial(), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_OR ~ X + C, family = binomial(), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_OR ~ X + C_ndif, family = binomial(), data = df.a4)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_OR ~ X + C_dif, family = binomial(), data = df.a4)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+
+  # --- Scenario #5 ---
+  # Comorbidity
+  c_a5 <- rbinom(n_a, size = 1, prob = 0.3)
+  # Exposure
+  x_a5 <- rbinom(n_a, size = 1, prob = 0.5)
+  # Outcome
+  py_a5_RD <- 0.2 + 0.2 * x_a5 + 0.2 * c_a5
+  py_a5_RR <- exp((log(0.205) + log(2) * x_a5 + log(2.4) * c_a5))
+  py_a5_OR <- 1 / (1 + exp(-(log(0.3754277) + log(2) * x_a5 + log(2.4) * c_a5)))
+  y_a5_LM <- rnorm(n_a, 7 / 3, 2) + rnorm(n_a, 2 * x_a5, 2) + rnorm(n_a, 2.4 * c_a5, 2)
+  y_a5_RD <- rbinom(n_a, size = 1, prob = py_a5_RD)
+  y_a5_RR <- rbinom(n_a, size = 1, prob = py_a5_RR)
+  y_a5_OR <- rbinom(n_a, size = 1, prob = py_a5_OR)
+
+  df.a5 <- data.frame(X = x_a5, C = c_a5, Y_LM = y_a5_LM, Y_RD = y_a5_RD, Y_RR = y_a5_RR, Y_OR = y_a5_OR)
+
+  # Missclassification of C
+  df.a5 <- add_misclassified(df.a5, C_var = "C", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+
+  # Run GLMs for Scenario 5 - LM Models
+  results[i, current_col_idx] <- glm(Y_LM ~ X, family = gaussian(link = "identity"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_LM ~ X + C, family = gaussian(link = "identity"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_LM ~ X + C_ndif, family = gaussian(link = "identity"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_LM ~ X + C_dif, family = gaussian(link = "identity"), data = df.a5)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 5 - RD Models
+  results[i, current_col_idx] <- glm(Y_RD ~ X, family = binomial(link = "identity"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RD ~ X + C, family = binomial(link = "identity"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RD ~ X + C_ndif, family = binomial(link = "identity"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RD ~ X + C_dif, family = binomial(link = "identity"), data = df.a5)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 5 - RR Models
+  results[i, current_col_idx] <- glm(Y_RR ~ X, family = poisson(link = "log"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RR ~ X + C, family = poisson(link = "log"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RR ~ X + C_ndif, family = poisson(link = "log"), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RR ~ X + C_dif, family = poisson(link = "log"), data = df.a5)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 5 - OR Models
+  results[i, current_col_idx] <- glm(Y_OR ~ X, family = binomial(), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_OR ~ X + C, family = binomial(), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_OR ~ X + C_ndif, family = binomial(), data = df.a5)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_OR ~ X + C_dif, family = binomial(), data = df.a5)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+
+  # --- Scenario #6 ---
+  # Exposure
+  x_a6 <- rbinom(n_a, size = 1, prob = 0.5)
+  # Outcome
+  py_a6_RD <- 0.4 + 0.2 * x_a6
+  py_a6_RR <- exp((log(0.4) + log(2) * x_a6))
+  py_a6_OR <- 1 / (1 + exp(-(log(0.4) + log(2) * x_a6)))
+  y_a6_LM <- rnorm(n_a, 7 / 3, 2) + rnorm(n_a, 2 * x_a6, 2)
+  y_a6_RD <- rbinom(n_a, size = 1, prob = py_a6_RD)
+  y_a6_RR <- rbinom(n_a, size = 1, prob = py_a6_RR)
+  y_a6_OR <- rbinom(n_a, size = 1, prob = py_a6_OR)
+
+  # Comorbidity
+  pc_a6_LM <- 1 / (1 + exp(-(-log(2.6) + log(2) * y_a6_LM)))
+  pc_a6_RD <- 0.3 + 0.3 * y_a6_RD
+  pc_a6_RR <- exp(log(0.3) + log(2) * y_a6_RR)
+  pc_a6_OR <- 1 / (1 + exp(-(log(0.3) + log(2) * y_a6_OR)))
+  c_a6_LM <- rbinom(n_a, size = 1, prob = pc_a6_LM)
+  c_a6_RD <- rbinom(n_a, size = 1, prob = pc_a6_RD)
+  c_a6_RR <- rbinom(n_a, size = 1, prob = pc_a6_RR)
+  c_a6_OR <- rbinom(n_a, size = 1, prob = pc_a6_OR)
+
+  df.a6 <- data.frame(X = x_a6, C_LM = c_a6_LM, C_RD = c_a6_RD, C_RR = c_a6_RR, C_OR = c_a6_OR,
+                      Y_LM = y_a6_LM, Y_RD = y_a6_RD, Y_RR = y_a6_RR, Y_OR = y_a6_OR)
+
+  # Missclassification of C variables - note, C_var dynamically changes
+  df.a6 <- add_misclassified(df.a6, C_var = "C_LM", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+  df.a6 <- add_misclassified(df.a6, C_var = "C_RD", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+  df.a6 <- add_misclassified(df.a6, C_var = "C_RR", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+  df.a6 <- add_misclassified(df.a6, C_var = "C_OR", X_var = "X",
+                             sens = misclass_sens, spec = misclass_spec,
+                             sens0 = misclass_sens0, spec0 = misclass_spec0,
+                             sens1 = misclass_sens1, spec1 = misclass_spec1)
+
+  # Run GLMs for Scenario 6 - LM Models (using C_LM)
+  results[i, current_col_idx] <- glm(Y_LM ~ X, family = gaussian(link = "identity"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_LM ~ X + C_LM, family = gaussian(link = "identity"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_LM ~ X + C_LM_ndif, family = gaussian(link = "identity"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_LM ~ X + C_LM_dif, family = gaussian(link = "identity"), data = df.a6)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 6 - RD Models (using C_RD)
+  results[i, current_col_idx] <- glm(Y_RD ~ X, family = binomial(link = "identity"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RD ~ X + C_RD, family = binomial(link = "identity"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RD ~ X + C_RD_ndif, family = binomial(link = "identity"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RD ~ X + C_RD_dif, family = binomial(link = "identity"), data = df.a6)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 6 - RR Models (using C_RR)
+  results[i, current_col_idx] <- glm(Y_RR ~ X, family = poisson(link = "log"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RR ~ X + C_RR, family = poisson(link = "log"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_RR ~ X + C_RR_ndif, family = poisson(link = "log"), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_RR ~ X + C_RR_dif, family = poisson(link = "log"), data = df.a6)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+
+  # Run GLMs for Scenario 6 - OR Models (using C_OR)
+  results[i, current_col_idx] <- glm(Y_OR ~ X, family = binomial(), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_OR ~ X + C_OR, family = binomial(), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 2] <- glm(Y_OR ~ X + C_OR_ndif, family = binomial(), data = df.a6)$coefficients[2]
+  results[i, current_col_idx + 3] <- glm(Y_OR ~ X + C_OR_dif, family = binomial(), data = df.a6)$coefficients[2]
+  current_col_idx <- current_col_idx + 4
+  
+  ### --- NEW SCENARIO #7: Categorical Covariate (4 Levels) --- ###
+  # DAG: C -> X, C -> Y, X -> Y
+  
+  # Comorbidity (4 levels: 0, 1, 2, 3)
+  c_a7 <- sample(0:3, size = n_a, replace = TRUE, prob = c(0.4, 0.3, 0.2, 0.1))
+  
+  # Exposure X depends on C
+  px_a7 <- 0.15 + 0.1 * c_a7
+  x_a7 <- rbinom(n_a, size = 1, prob = px_a7)
+  
+  # Outcome Y depends on X and C (using dummy variables for C)
+  c1 <- as.numeric(c_a7 == 1); c2 <- as.numeric(c_a7 == 2); c3 <- as.numeric(c_a7 == 3)
+  
+  y_a7_LM <- 2 + 2 * x_a7 + 1.5 * c1 + 1.2 * c2 + 2.5 * c3 + rnorm(n_a, 0, 2)
+  py_a7_OR <- 1 / (1 + exp(-(log(0.2) + log(2) * x_a7 + log(1.8) * c1 + log(1.2) * c2 + log(3.0) * c3)))
+  py_a7_RR <- pmin(0.95, exp(log(0.1) + log(2) * x_a7 + log(1.8) * c1 + log(1.2) * c2 + log(3.0) * c3))
+  py_a7_RD <- pmin(0.99, pmax(0.01, 0.1 + 0.2 * x_a7 + 0.05 * c1 + 0.03 * c2 + 0.15 * c3))
+
+  y_a7_RD <- rbinom(n_a, size = 1, prob = py_a7_RD)
+  y_a7_RR <- rbinom(n_a, size = 1, prob = py_a7_RR)
+  y_a7_OR <- rbinom(n_a, size = 1, prob = py_a7_OR)
+  
+  # Ensure C is a factor for model fitting
+  df.a7 <- data.frame(X = x_a7, C = as.factor(c_a7), Y_LM = y_a7_LM, Y_RD = y_a7_RD, Y_RR = y_a7_RR, Y_OR = y_a7_OR)
+
+  # Fit models for Scenario 7 (No misclassification models)
+  results[i, current_col_idx]     <- glm(Y_LM ~ X, family = gaussian, data = df.a7)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_LM ~ X + C, family = gaussian, data = df.a7)$coefficients["X"]
+  current_col_idx <- current_col_idx + 2
+  
+  results[i, current_col_idx]     <- glm(Y_RD ~ X, family = binomial(link = "identity"), data = df.a7)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RD ~ X + C, family = binomial(link = "identity"), data = df.a7)$coefficients["X"]
+  current_col_idx <- current_col_idx + 2
+  
+  results[i, current_col_idx]     <- glm(Y_RR ~ X, family = poisson(link = "log"), data = df.a7)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RR ~ X + C, family = poisson(link = "log"), data = df.a7)$coefficients["X"]
+  current_col_idx <- current_col_idx + 2
+  
+  results[i, current_col_idx]     <- glm(Y_OR ~ X, family = binomial(), data = df.a7)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_OR ~ X + C, family = binomial(), data = df.a7)$coefficients["X"]
+  current_col_idx <- current_col_idx + 2
+
+
+  ### --- NEW SCENARIO #8: Continuous Covariate --- ###
+  # DAG: C -> X, C -> Y, X -> Y
+  
+  # Comorbidity (continuous)
+  c_a8 <- rnorm(n_a, mean = 2, sd = 2)
+  
+  # Exposure X depends on C (logistic relationship)
+  px_a8 <- 1 / (1 + exp(-(-1 + 0.25 * c_a8)))
+  x_a8 <- rbinom(n_a, size = 1, prob = px_a8)
+  
+  # Outcome Y depends on X and C
+  y_a8_LM <- 10 + 2 * x_a8 + 1.5 * c_a8 + rnorm(n_a, 0, 3)
+  py_a8_OR <- 1 / (1 + exp(-(log(0.4) + log(2) * x_a8 + log(1.15) * c_a8)))
+  py_a8_RR <- pmin(0.99, exp((log(0.2) + log(2) * x_a8 + log(1.15) * c_a8)))
+  py_a8_RD <- pmin(0.99, pmax(0.01, 0.2 + 0.20 * x_a8 + 0.01 * c_a8))
+
+  y_a8_RD <- rbinom(n_a, size = 1, prob = py_a8_RD)
+  y_a8_RR <- rbinom(n_a, size = 1, prob = py_a8_RR)
+  y_a8_OR <- rbinom(n_a, size = 1, prob = py_a8_OR)
+  
+  df.a8 <- data.frame(X = x_a8, C = c_a8, Y_LM = y_a8_LM, Y_RD = y_a8_RD, Y_RR = y_a8_RR, Y_OR = y_a8_OR)
+  
+  # Introduce measurement error for C instead of misclassification
+  df.a8$C_ndif <- df.a8$C + rnorm(n_a, mean = 0, sd = 1) # Non-differential error
+  df.a8$C_dif <- df.a8$C + rnorm(n_a, mean = 0, sd = ifelse(df.a8$X == 1, 1.0, 0.5)) # Differential error
+  
+  # Fit models for Scenario 8
+  results[i, current_col_idx]     <- glm(Y_LM ~ X, family = gaussian, data = df.a8)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_LM ~ X + C, family = gaussian, data = df.a8)$coefficients["X"]
+  results[i, current_col_idx + 2] <- glm(Y_LM ~ X + C_ndif, family = gaussian, data = df.a8)$coefficients["X"]
+  results[i, current_col_idx + 3] <- glm(Y_LM ~ X + C_dif, family = gaussian, data = df.a8)$coefficients["X"]
+  current_col_idx <- current_col_idx + 4
+  
+  results[i, current_col_idx]     <- glm(Y_RD ~ X, family = binomial(link = "identity"), data = df.a8)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RD ~ X + C, family = binomial(link = "identity"), data = df.a8)$coefficients["X"]
+  results[i, current_col_idx + 2] <- glm(Y_RD ~ X + C_ndif, family = binomial(link = "identity"), data = df.a8)$coefficients["X"]
+  results[i, current_col_idx + 3] <- glm(Y_RD ~ X + C_dif, family = binomial(link = "identity"), data = df.a8)$coefficients["X"]
+  current_col_idx <- current_col_idx + 4
+  
+  results[i, current_col_idx]     <- glm(Y_RR ~ X, family = poisson(link = "log"), data = df.a8)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_RR ~ X + C, family = poisson(link = "log"), data = df.a8)$coefficients["X"]
+  results[i, current_col_idx + 2] <- glm(Y_RR ~ X + C_ndif, family = poisson(link = "log"), data = df.a8)$coefficients["X"]
+  results[i, current_col_idx + 3] <- glm(Y_RR ~ X + C_dif, family = poisson(link = "log"), data = df.a8)$coefficients["X"]
+  current_col_idx <- current_col_idx + 4
+  
+  results[i, current_col_idx]     <- glm(Y_OR ~ X, family = binomial(), data = df.a8)$coefficients[2]
+  results[i, current_col_idx + 1] <- glm(Y_OR ~ X + C, family = binomial(), data = df.a8)$coefficients["X"]
+  results[i, current_col_idx + 2] <- glm(Y_OR ~ X + C_ndif, family = binomial(), data = df.a8)$coefficients["X"]
+  results[i, current_col_idx + 3] <- glm(Y_OR ~ X + C_dif, family = binomial(), data = df.a8)$coefficients["X"]
+  current_col_idx <- current_col_idx + 4
+}
+
+# The results data frame is now populated with the coefficients for all scenarios and models.
+# You can further process 'results' as needed (e.g., calculate means, CIs).
+```
+
+```{r}
+## Load necessary library
+if (!require(dplyr)) install.packages("dplyr"); library(dplyr)
+
+# Set the seed for reproducibility
+set.seed(1447080)
+
+# --- Add Misclassification Function ---
+# This function creates a differentially misclassified version of 'C'.
+add_misclassified <- function(df, C_var, X_var, sens_d0, spec_d0, sens_d1, spec_d1) {
+  # Differential misclassification (depends on exposure X)
+  prob_C_dif <- case_when(
+    df[[X_var]] == 0 & df[[C_var]] == 1 ~ sens_d0,
+    df[[X_var]] == 0 & df[[C_var]] == 0 ~ 1 - spec_d0,
+    df[[X_var]] == 1 & df[[C_var]] == 1 ~ sens_d1,
+    df[[X_var]] == 1 & df[[C_var]] == 0 ~ 1 - spec_d1,
+    TRUE ~ NA_real_
+  )
+  df <- df %>% mutate(C_dif = rbinom(n(), 1, prob = prob_C_dif))
+
+  return(df)
+}
+
+# --- Simulation Setup ---
+n_a <- 10000
+num_iterations <- 5000
+model_types <- c("LM", "RD", "RR", "OR")
+
+# --- Define Expanded Misclassification Parameter Sets ---
+misclass_params <- list(
+  v1 = list(name = "Perfect",      sens_d0=1.00, spec_d0=1.00, sens_d1=1.00, spec_d1=1.00),
+  v2 = list(name = "ModDif_HiSe1", sens_d0=0.70, spec_d0=0.70, sens_d1=0.98, spec_d1=0.98),
+  v3 = list(name = "SevDif_HiSe1", sens_d0=0.60, spec_d0=0.60, sens_d1=0.95, spec_d1=0.95),
+  v4 = list(name = "ModDif_HiSe0", sens_d0=0.98, spec_d0=0.98, sens_d1=0.70, spec_d1=0.70),
+  v5 = list(name = "PerfectSp",    sens_d0=0.75, spec_d0=1.00, sens_d1=0.75, spec_d1=1.00),
+  v6 = list(name = "PerfectSe",    sens_d0=1.00, spec_d0=0.75, sens_d1=1.00, spec_d1=0.75),
+  v7 = list(name = "PoorOverall",  sens_d0=0.65, spec_d0=0.65, sens_d1=0.65, spec_d1=0.65),
+  v8 = list(name = "VPoorDif",     sens_d0=0.55, spec_d0=0.55, sens_d1=0.85, spec_d1=0.85)
+)
+
+# --- Setup Results Storage ---
+# Use a list to store results for each iteration, then combine them.
+# This avoids issues with pre-allocating a matrix with potentially incorrect column order.
+all_results <- vector("list", num_iterations)
+
+# --- Simulation Loop ---
+for (i in 1:num_iterations) {
+
+  # Temporary list to store results for the current iteration
+  iteration_results <- list()
+
+  # --- Generate Base Data for Scenarios 1 & 2 ---
+  # Scenario 1 Data (C is a confounder: C -> X, C -> Y)
+  c_a1 <- rbinom(n_a, size = 1, prob = 0.5)
+  px_a1 <- 1 / (1 + exp(-(log(2^-0.5) + log(2) * c_a1)))
+  x_a1 <- rbinom(n_a, size = 1, prob = px_a1)
+  y_a1_LM <- 2 + 2 * x_a1 + 2 * c_a1 + rnorm(n_a, 2, 2)
+  py_a1_RD <- pmin(0.99, pmax(0.01, 0.2 + 0.2 * x_a1 + 0.2 * c_a1))
+  py_a1_RR <- exp(log(0.2) + log(2) * x_a1 + log(2) * c_a1)
+  py_a1_OR <- 1 / (1 + exp(-(log(0.4) + log(2) * x_a1 + log(2) * c_a1)))
+  df.a1_base <- data.frame(X = x_a1, C = c_a1,
+                           Y_LM = y_a1_LM, Y_RD = rbinom(n_a, 1, py_a1_RD),
+                           Y_RR = rbinom(n_a, 1, py_a1_RR), Y_OR = rbinom(n_a, 1, py_a1_OR))
+
+  # Scenario 2 Data (C is a mediator: X -> C -> Y)
+  x_a2 <- rbinom(n_a, size = 1, prob = 0.5)
+  pc_a2 <- exp((log(0.30) + log(2) * x_a2))
+  c_a2 <- rbinom(n_a, size = 1, prob = pc_a2)
+  y_a2_LM <- rnorm(n_a, 2, 2) + rnorm(n_a, 2 * x_a2 * 0.7, 2) + rnorm(n_a, 2 * c_a2, 2)
+  py_a2_RD <- 0.20 + 0.2 * 0.7 * x_a2 + 0.2 * c_a2
+  py_a2_RR <- exp(log((0.20)) + log(2) * x_a2 + log(2) * c_a2 + log(3/4) * x_a2 * c_a2)
+  py_a2_OR <- 1 / (1 + exp(-(log((0.20)) + log(2) * x_a2 + log(2)*c_a2 + log(0.587/0.8) * x_a2 * c_a2)))
+  df.a2_base <- data.frame(X = x_a2, C = c_a2,
+                           Y_LM = y_a2_LM, Y_RD = rbinom(n_a, 1, py_a2_RD),
+                           Y_RR = rbinom(n_a, 1, py_a2_RR), Y_OR = rbinom(n_a, 1, py_a2_OR))
+
+  scenarios_data <- list("S1" = df.a1_base, "S2" = df.a2_base) # Name the list for easier access to scenario name
+
+  # --- Loop through Scenarios (1 and 2) ---
+  for (scen_name in names(scenarios_data)) {
+    scen_data <- scenarios_data[[scen_name]]
+
+    # --- Loop through Misclassification Versions ---
+    for (param_name in names(misclass_params)) {
+      params <- misclass_params[[param_name]]
+
+      # Create misclassified version of C for the current dataset
+      df_analysis <- add_misclassified(scen_data, C_var = "C", X_var = "X",
+                                       sens_d0 = params$sens_d0, spec_d0 = params$spec_d0,
+                                       sens_d1 = params$sens_d1, spec_d1 = params$spec_d1)
+
+      # --- Loop through Model Types (LM, RD, RR, OR) ---
+      for (mt in model_types) {
+        y_var <- paste0("Y_", mt)
+        family_arg <- switch(mt,
+                             "LM" = gaussian(link = "identity"),
+                             "RD" = binomial(link = "identity"),
+                             "RR" = poisson(link = "log"),
+                             "OR" = binomial(link = "logit"))
+
+        # Fit Unadjusted model
+        unadjusted_col_name <- paste(scen_name, param_name, mt, sep = "_") # No suffix for unadjusted
+        iteration_results[[unadjusted_col_name]] <- glm(get(y_var) ~ X, family = family_arg, data = df_analysis)$coefficients["X"]
+
+        # Fit Misclassified C model
+        misclassified_col_name <- paste(scen_name, param_name, mt, "Cdif", sep = "_")
+        iteration_results[[misclassified_col_name]] <- glm(get(y_var) ~ X + C_dif, family = family_arg, data = df_analysis)$coefficients["X"]
+      }
+    }
+  }
+  # Store results for the current iteration
+  all_results[[i]] <- as_tibble(iteration_results)
+}
+
+# Combine all iteration results into a single tibble
+final_results <- bind_rows(all_results)
+```
+
+
+
+
